@@ -213,11 +213,12 @@ const DEFAULTS=()=>({
     unidades:['und','caja','paquete','kg','bulto','rollo','par','m','lt','saco','pallet'],
     pieREM:'Documento de remisión. No es válido como factura de venta.',
     pieCOT:'Cotización informativa. Sujeta a disponibilidad de inventario y a confirmación.',
+    pieFAC:'',
     bTitular:'', bDoc:'', banco:'', bTipo:'', bCuenta:'', bLlave:'',
     validezDias:15,
     condCOT:'Forma de pago: a convenir.\nTiempo de entrega: a convenir según disponibilidad.'
   },
-  counters:{REM:{year:new Date().getFullYear(),n:1},COT:{year:new Date().getFullYear(),n:1}},
+  counters:{REM:{year:new Date().getFullYear(),n:1},COT:{year:new Date().getFullYear(),n:1},FAC:{year:new Date().getFullYear(),n:1}},
   clients:[], docs:[]
 });
 let mem=null;
@@ -239,7 +240,8 @@ function nextNum(tipo){
   const c=DB.counters[tipo],yr=new Date().getFullYear();
   let n=c.n; if(DB.settings.resetAnual&&c.year!==yr)n=1;
   const yy=String(yr).slice(2);
-  return {n,yr,num:DB.settings.prefijo+'-'+tipo+'-'+yy+'-'+String(n).padStart(4,'0')};
+  const code={REM:'REM',COT:'COT',FAC:'FV'}[tipo]||tipo;
+  return {n,yr,num:DB.settings.prefijo+'-'+code+'-'+yy+'-'+String(n).padStart(4,'0')};
 }
 function totals(d){
   const sub=d.items.reduce((a,i)=>a+(i.cant||0)*(i.precio||0),0);
@@ -249,9 +251,18 @@ function totals(d){
   const units=d.items.reduce((a,i)=>a+(i.cant||0),0);
   return {sub,desc,iva,total:base+iva,units,n:d.items.length};
 }
-const usesPrices=d=>d.tipo==='COT'||d.showPrices;
-const tipoName=t=>t==='REM'?'Remisión':'Cotización';
-function snapEmisor(){const s=DB.settings;return{empresa:s.empresa,titular:s.titular,cc:s.cc,nit:s.nit,tel:s.tel,email:s.email,dir:s.dir,ciudad:s.ciudad,regimen:s.regimen,pie:s.pieREM,pieC:s.pieCOT,bTitular:s.bTitular,bDoc:s.bDoc,banco:s.banco,bTipo:s.bTipo,bCuenta:s.bCuenta,bLlave:s.bLlave}}
+const usesPrices=d=>d.tipo!=='REM'||d.showPrices;
+const tipoName=t=>({REM:'Remisión',COT:'Cotización',FAC:'Factura de venta'}[t]||t);
+function addDays(iso,n){const [y,m,d]=iso.split('-').map(Number);const x=new Date(y,m-1,d+n);return x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0')+'-'+String(x.getDate()).padStart(2,'0')}
+function footText(d,e,s){return d.tipo==='REM'?(e.pie||s.pieREM):d.tipo==='FAC'?(e.pieF!==undefined?e.pieF:(s.pieFAC||'')):(e.pieC||s.pieCOT)}
+function metaOf(d){
+  let m;
+  if(d.tipo==='REM')m=[['Orden / referencia',d.ref],['Conductor',d.conductor],['Placa',d.placa],['Entrega',d.entrega]];
+  else if(d.tipo==='FAC'){const cr=d.formaPago==='Crédito';m=[['Forma de pago',cr?'Crédito a '+(d.plazo||0)+' días':'Contado'],['Vence',cr?shortDate(addDays(d.fecha,d.plazo||0)):''],['Referencia',d.ref],['N° factura DIAN',d.nFE],['Estado',d.estado==='cobrada'?'Cobrada':'Pendiente de pago']]}
+  else m=[['Validez',d.validez?d.validez+' días':''],['Referencia',d.ref]];
+  return m.filter(x=>x[1]);
+}
+function snapEmisor(){const s=DB.settings;return{empresa:s.empresa,titular:s.titular,cc:s.cc,nit:s.nit,tel:s.tel,email:s.email,dir:s.dir,ciudad:s.ciudad,regimen:s.regimen,pie:s.pieREM,pieC:s.pieCOT,pieF:s.pieFAC,bTitular:s.bTitular,bDoc:s.bDoc,banco:s.banco,bTipo:s.bTipo,bCuenta:s.bCuenta,bLlave:s.bLlave}}
 function payText(e){
   const l=[];
   if(e.bTitular)l.push('Titular: '+e.bTitular+(e.bDoc?' · C.C. '+e.bDoc:''));
@@ -267,7 +278,7 @@ function newDraft(tipo){
     ref:'',conductor:'',placa:'',entrega:'',obs:'',
     items:[{cod:'',desc:'',und:s.unidades[0]||'und',cant:1,precio:0}],
     showPrices:false,aplicaIva:false,ivaPct:19,descPct:0,
-    validez:s.validezDias,cond:s.condCOT,mostrarPago:true};
+    validez:s.validezDias,cond:s.condCOT,mostrarPago:true,formaPago:'Contado',plazo:30,estado:'pendiente',nFE:''};
 }
 
 /* ================== Pegar lista ================== */
@@ -307,13 +318,12 @@ function modal(o){
 
 /* ================== Documento: HTML de vista previa ================== */
 function docHTML(d){
-  const e=d.emisor||snapEmisor(), s=DB.settings, isR=d.tipo==='REM', pr=usesPrices(d), t=totals(d);
+  const e=d.emisor||snapEmisor(), s=DB.settings, isR=d.tipo==='REM', isF=d.tipo==='FAC', pr=usesPrices(d), t=totals(d);
   const hasCod=d.items.some(i=>i.cod);
-  const meta=isR?[['Orden / referencia',d.ref],['Conductor',d.conductor],['Placa',d.placa],['Entrega',d.entrega]]:[['Validez',d.validez?d.validez+' días':''],['Referencia',d.ref]];
-  const mm=meta.filter(x=>x[1]);
+  const mm=metaOf(d);
   const rows=d.items.map((i,k)=>'<tr><td class="c">'+(k+1)+'</td>'+(hasCod?'<td>'+esc(i.cod)+'</td>':'')+'<td>'+esc(i.desc)+'</td><td class="c">'+esc(i.und)+'</td><td class="c">'+fq(i.cant)+'</td>'+(pr?'<td class="rt">'+cop(i.precio)+'</td><td class="rt">'+cop(i.cant*i.precio)+'</td>':'')+'</tr>').join('');
-  const sigBlock='<h4>'+(isR?'Despachado por':'Cordialmente')+'</h4><div class="sp">'+(s.firmaImg?'<img src="'+s.firmaImg+'" alt="">':'')+'</div><div class="ln"><b>'+esc(e.titular)+'</b>C.C. '+esc(e.cc)+'<br>Cel. '+esc(e.tel)+'<br>'+esc(e.email)+'<br>'+esc(e.dir)+'</div>';
-  return '<div class="hdr"><img src="'+logoSrc()+'" alt="'+esc(e.empresa)+'"><div class="tt"><h1>'+(isR?'REMISIÓN':'COTIZACIÓN')+'</h1><div class="n">N° '+esc(d.num||nextNum(d.tipo).num)+'</div><div class="dt">'+esc(d.ciudad)+', '+longDate(d.fecha)+'</div></div></div><div class="gl"></div>'
+  const sigBlock='<h4>'+(isR?'Despachado por':isF?'Emitida por':'Cordialmente')+'</h4><div class="sp">'+(s.firmaImg?'<img src="'+s.firmaImg+'" alt="">':'')+'</div><div class="ln"><b>'+esc(e.titular)+'</b>C.C. '+esc(e.cc)+'<br>Cel. '+esc(e.tel)+'<br>'+esc(e.email)+'<br>'+esc(e.dir)+'</div>';
+  return '<div class="hdr"><img src="'+logoSrc()+'" alt="'+esc(e.empresa)+'"><div class="tt"><h1>'+tipoName(d.tipo).toUpperCase()+'</h1><div class="n">N° '+esc(d.num||nextNum(d.tipo).num)+'</div><div class="dt">'+esc(d.ciudad)+', '+longDate(d.fecha)+'</div></div></div><div class="gl"></div>'
   +'<div class="parties"><div><h4>Remitente</h4><p class="b">'+esc(e.empresa)+'</p><p>'+esc(e.titular)+'</p><p>NIT '+esc(e.nit)+'</p><p>'+esc(e.dir)+'</p><p>'+esc(e.ciudad)+'</p><p>Tel. '+esc(e.tel)+' · '+esc(e.email)+'</p></div>'
   +'<div><h4>Destinatario</h4><p class="b">'+esc(d.cliente.nombre||'—')+'</p>'+(d.cliente.doc?'<p>NIT / C.C. '+esc(d.cliente.doc)+'</p>':'')+(d.cliente.dir?'<p>'+esc(d.cliente.dir)+'</p>':'')+(d.cliente.ciudad?'<p>'+esc(d.cliente.ciudad)+'</p>':'')+(d.cliente.contacto?'<p>Atención: '+esc(d.cliente.contacto)+'</p>':'')+(d.cliente.tel?'<p>Tel. '+esc(d.cliente.tel)+'</p>':'')+'</div></div>'
   +(mm.length?'<div class="meta">'+mm.map(x=>'<div><small>'+esc(x[0])+'</small>'+esc(x[1])+'</div>').join('')+'</div>':'')
@@ -321,23 +331,23 @@ function docHTML(d){
   +(pr?'<div class="tot"><div><span>Subtotal</span><span>'+cop(t.sub)+'</span></div>'+(t.desc?'<div><span>Descuento ('+fq(d.descPct)+'%)</span><span>- '+cop(t.desc)+'</span></div>':'')+(d.aplicaIva?'<div><span>IVA ('+fq(d.ivaPct)+'%)</span><span>'+cop(t.iva)+'</span></div>':'')+'<div class="gt"><span>Total</span><span>'+cop(t.total)+'</span></div></div>':'')
   +'<div class="units">'+t.n+(t.n===1?' artículo':' artículos')+' · '+fq(t.units)+(t.units===1?' unidad':' unidades')+'</div>'
   +(d.obs?'<div class="box"><b>Observaciones</b>'+esc(d.obs)+'</div>':'')
-  +(!isR?'<div class="box"><b>Condiciones</b>'+esc(d.cond||'')+(d.aplicaIva?'':'\nPrecios sin IVA'+(e.regimen?' ('+esc(e.regimen)+')':'')+'.')+'\nValores expresados en pesos colombianos (COP).</div>':'')
+  +(d.tipo==='COT'?'<div class="box"><b>Condiciones</b>'+esc(d.cond||'')+(d.aplicaIva?'':'\nPrecios sin IVA'+(e.regimen?' ('+esc(e.regimen)+')':'')+'.')+'\nValores expresados en pesos colombianos (COP).</div>':'')
   +(!isR&&d.mostrarPago!==false&&payText(e)?'<div class="box"><b>Datos para el pago</b>'+esc(payText(e))+'</div>':'')
   +(isR?'<div class="sig"><div>'+sigBlock+'</div><div><h4>Recibido conforme</h4><div class="sp"></div><div class="ln"><b>Nombre:</b>C.C.:<br>Fecha:<br>Firma y sello</div></div></div>':'<div class="sig"><div>'+sigBlock+'</div><div></div></div>')
-  +'<div class="ft">'+esc(isR?(e.pie||s.pieREM):(e.pieC||s.pieCOT))+'<br>'+esc(e.empresa)+' · NIT '+esc(e.nit)+' · '+esc(e.tel)+' · '+esc(e.email)+'</div>';
+  +'<div class="ft">'+(footText(d,e,s)?esc(footText(d,e,s))+'<br>':'')+esc(e.empresa)+' · NIT '+esc(e.nit)+' · '+esc(e.tel)+' · '+esc(e.email)+'</div>';
 }
 
 /* ================== Documento: PDF ================== */
 function buildPDF(d){
   const {jsPDF}=window.jspdf, doc=new jsPDF({unit:'mm',format:'a4'});
-  const s=DB.settings, e=d.emisor||snapEmisor(), isR=d.tipo==='REM', pr=usesPrices(d), t=totals(d);
+  const s=DB.settings, e=d.emisor||snapEmisor(), isR=d.tipo==='REM', isF=d.tipo==='FAC', pr=usesPrices(d), t=totals(d);
   const W=210,H=297,M=16, NAVY=[8,40,63], GOLD=[179,149,85], GOLDD=[143,116,56], MUTE=[107,116,128], INK=[40,52,62], TINT=[246,243,236];
   const num=d.num||nextNum(d.tipo).num;
   // Encabezado
   const lh=26, lw=lh*(s.logoW||520)/(s.logoH||441);
   try{doc.addImage(logoSrc(),'PNG',M,11,lw,lh)}catch(x){}
   doc.setFont('helvetica','bold');doc.setFontSize(21);doc.setTextColor(...NAVY);
-  doc.text(isR?'REMISIÓN':'COTIZACIÓN',W-M,20,{align:'right'});
+  doc.text(tipoName(d.tipo).toUpperCase(),W-M,20,{align:'right'});
   doc.setFontSize(11);doc.setTextColor(...GOLDD);doc.text('N° '+num,W-M,27,{align:'right'});
   doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(...MUTE);
   doc.text(d.ciudad+', '+longDate(d.fecha),W-M,32.5,{align:'right'});
@@ -358,7 +368,7 @@ function buildPDF(d){
   const y2=block(M+colW+12,'Destinatario',[c.nombre||'-',c.doc?'NIT / C.C. '+c.doc:'',c.dir,c.ciudad,c.contacto?'Atención: '+c.contacto:'',c.tel?'Tel. '+c.tel:'']);
   y=Math.max(y1,y2)+3;
   // Datos adicionales
-  const meta=(isR?[['Orden / referencia',d.ref],['Conductor',d.conductor],['Placa',d.placa],['Entrega',d.entrega]]:[['Validez',d.validez?d.validez+' días':''],['Referencia',d.ref]]).filter(x=>x[1]);
+  const meta=metaOf(d);
   if(meta.length){
     doc.setFillColor(...TINT);doc.roundedRect(M,y,W-2*M,12,1,1,'F');
     const cw=(W-2*M-8)/meta.length;
@@ -377,7 +387,7 @@ function buildPDF(d){
     alternateRowStyles:{fillColor:[250,248,243]},columnStyles:ci,
     didParseCell:h=>{if(h.section==='head'){const col=ci[h.column.index];if(col&&col.halign)h.cell.styles.halign=col.halign}},
     didDrawCell:h=>{if(h.section==='body'){doc.setDrawColor(230,225,213);doc.setLineWidth(.2);doc.line(h.cell.x,h.cell.y+h.cell.height,h.cell.x+h.cell.width,h.cell.y+h.cell.height)}},
-    didDrawPage:h=>{if(h.pageNumber>1){doc.setFont('helvetica','normal');doc.setFontSize(8);doc.setTextColor(...MUTE);doc.text(e.empresa+'  ·  '+(isR?'Remisión':'Cotización')+' '+num,M,13);doc.setDrawColor(...GOLD);doc.setLineWidth(.3);doc.line(M,15,W-M,15)}}
+    didDrawPage:h=>{if(h.pageNumber>1){doc.setFont('helvetica','normal');doc.setFontSize(8);doc.setTextColor(...MUTE);doc.text(e.empresa+'  ·  '+tipoName(d.tipo)+' '+num,M,13);doc.setDrawColor(...GOLD);doc.setLineWidth(.3);doc.line(M,15,W-M,15)}}
   });
   y=doc.lastAutoTable.finalY+7;
   const ensure=h=>{if(y+h>H-26){doc.addPage();y=22}};
@@ -402,13 +412,13 @@ function buildPDF(d){
     doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(...INK);doc.text(ls,M+5,y+11.2);y+=h+4;
   };
   if(d.obs)textBox('Observaciones',d.obs);
-  if(!isR)textBox('Condiciones',(d.cond||'')+(d.aplicaIva?'':'\nPrecios sin IVA'+(e.regimen?' ('+e.regimen+')':'')+'.')+'\nValores expresados en pesos colombianos (COP).');
+  if(d.tipo==='COT')textBox('Condiciones',(d.cond||'')+(d.aplicaIva?'':'\nPrecios sin IVA'+(e.regimen?' ('+e.regimen+')':'')+'.')+'\nValores expresados en pesos colombianos (COP).');
   if(!isR&&d.mostrarPago!==false&&payText(e))textBox('Datos para el pago',payText(e));
   // Firmas
   ensure(52);y+=4;
   const sx=M, rx=M+(W-2*M)/2+8, lw2=(W-2*M)/2-8;
   doc.setFont('helvetica','bold');doc.setFontSize(9);doc.setTextColor(...GOLDD);
-  doc.text(isR?'Despachado por':'Cordialmente',sx,y);
+  doc.text(isR?'Despachado por':isF?'Emitida por':'Cordialmente',sx,y);
   if(isR)doc.text('Recibido conforme',rx,y);
   if(s.firmaImg){try{doc.addImage(s.firmaImg,'PNG',sx,y+2,40,15)}catch(x){}}
   const ly=y+19;doc.setDrawColor(...NAVY);doc.setLineWidth(.3);doc.line(sx,ly,sx+lw2,ly);if(isR)doc.line(rx,ly,rx+lw2,ly);
@@ -422,7 +432,7 @@ function buildPDF(d){
   for(let p=1;p<=n;p++){
     doc.setPage(p);doc.setDrawColor(230,225,213);doc.setLineWidth(.25);doc.line(M,H-21,W-M,H-21);
     doc.setFont('helvetica','normal');doc.setFontSize(7.8);doc.setTextColor(...MUTE);
-    doc.text(isR?(e.pie||s.pieREM):(e.pieC||s.pieCOT),W/2,H-16.5,{align:'center'});
+    doc.text(footText(d,e,s),W/2,H-16.5,{align:'center'});
     doc.text(e.empresa+' · NIT '+e.nit+' · '+e.tel+' · '+e.email,W/2,H-12.5,{align:'center'});
     doc.text('Página '+p+' de '+n,W-M,H-8,{align:'right'});
   }
@@ -458,27 +468,35 @@ function validate(d){
   if(!d.cliente.nombre.trim()){toast('Falta el nombre del destinatario');return false}
   const it=d.items.filter(i=>i.desc.trim());
   if(!it.length){toast('Agrega al menos un artículo con descripción');return false}
-  d.items=it;return true;
+  d.items=it;if(d.tipo==='FAC'&&totals(d).total<=0){toast('Agrega los valores unitarios de los artículos');return false}return true;
 }
 
 /* ================== Pantallas ================== */
-const docMini=d=>{const t=totals(d);return '<button class="row" data-act="open" data-id="'+d.id+'"><div class="m"><span class="badge '+(d.tipo==='REM'?'r2':'')+'">'+tipoName(d.tipo)+'</span><div class="t">'+esc(d.num)+' · '+esc(d.cliente.nombre)+'</div><div class="s">'+t.n+(t.n===1?' artículo':' artículos')+' · '+fq(t.units)+' und</div></div><div class="r">'+shortDate(d.fecha)+(usesPrices(d)?'<br><b>'+cop(t.total)+'</b>':'')+'</div></button>'};
+const docMini=d=>{const t=totals(d);return '<button class="row" data-act="open" data-id="'+d.id+'"><div class="m"><span class="badge '+(d.tipo==='REM'?'r2':'')+'">'+tipoName(d.tipo)+'</span><div class="t">'+esc(d.num)+' · '+esc(d.cliente.nombre)+'</div><div class="s">'+t.n+(t.n===1?' artículo':' artículos')+' · '+fq(t.units)+' und'+(d.tipo==='FAC'?' · '+(d.estado==='cobrada'?'Cobrada':'Por cobrar'):'')+'</div></div><div class="r">'+shortDate(d.fecha)+(usesPrices(d)?'<br><b>'+cop(t.total)+'</b>':'')+'</div></button>'};
 
+function pendHTML(){
+  const p=DB.docs.filter(x=>x.tipo==='FAC'&&x.estado!=='cobrada');
+  if(!p.length)return '';
+  const tot=p.reduce((a,x)=>a+totals(x).total,0);
+  return '<button class="row" data-act="pend" style="margin-top:10px"><div class="m"><div class="s">Por cobrar</div><div class="t" style="font-size:18px">'+cop(tot)+'</div></div><div class="r">'+p.length+(p.length===1?' factura':' facturas')+'<br>Ver</div></button>';
+}
 function homeHTML(){
   const rec=DB.docs.slice(0,5);
   return '<div class="hero"><img src="'+logoSrc()+'" alt="Logist Services"><div class="rule"></div><p>'+esc(DB.settings.empresa)+'</p></div>'
   +(DB.settings.configurado?'':'<div class="card" style="margin-top:18px"><h2>Configura tu empresa</h2><p class="hint">Antes de crear tu primer documento, completa tus datos y los de pago. Se guardan solo en este dispositivo.</p><button class="btn w" data-act="tab" data-s="settings">Completar datos</button></div>')
   +'<div class="actions"><button class="big p" data-act="new" data-t="REM">'+ic('box')+'<div><b>Nueva remisión</b><span>Lista de artículos y unidades, lista para enviar</span></div></button>'
-  +'<button class="big s" data-act="new" data-t="COT">'+ic('doc')+'<div><b>Nueva cotización</b><span>Con valores unitarios y totales</span></div></button></div>'
+  +'<button class="big s" data-act="new" data-t="COT">'+ic('doc')+'<div><b>Nueva cotización</b><span>Con valores unitarios y totales</span></div></button>'
+  +'<button class="big s" data-act="new" data-t="FAC">'+ic('list')+'<div><b>Nueva factura de venta</b><span>Control de ventas y cobros</span></div></button></div>'
+  +pendHTML()
   +'<div class="sec"><h2>Recientes</h2>'+(DB.docs.length>5?'<button class="link" data-act="tab" data-s="history">Ver todo</button>':'')+'</div>'
   +(rec.length?'<div class="list">'+rec.map(docMini).join('')+'</div>':'<div class="empty">Todavía no hay documentos. Crea tu primera remisión con el botón de arriba.</div>');
 }
 function historyHTML(){
   const q=ui.q.toLowerCase();
-  const l=DB.docs.filter(d=>(ui.filter==='ALL'||d.tipo===ui.filter)&&(!q||(d.num+' '+d.cliente.nombre+' '+d.items.map(i=>i.desc).join(' ')).toLowerCase().includes(q)));
+  const l=DB.docs.filter(d=>(ui.filter==='ALL'||d.tipo===ui.filter||(ui.filter==='PEND'&&d.tipo==='FAC'&&d.estado!=='cobrada'))&&(!q||(d.num+' '+d.cliente.nombre+' '+d.items.map(i=>i.desc).join(' ')).toLowerCase().includes(q)));
   return '<div class="top"><h1>Historial</h1></div>'
   +'<label class="f"><span>Buscar por número, cliente o artículo</span><input id="q" type="search" value="'+esc(ui.q)+'" data-act-input="q"></label>'
-  +'<div class="bar" style="margin-bottom:12px">'+[['ALL','Todos'],['REM','Remisiones'],['COT','Cotizaciones']].map(x=>'<button class="btn '+(ui.filter===x[0]?'':'o')+'" data-act="filter" data-v="'+x[0]+'">'+x[1]+'</button>').join('')+'</div>'
+  +'<div class="bar" style="margin-bottom:12px">'+[['ALL','Todos'],['REM','Remisiones'],['COT','Cotizaciones'],['FAC','Facturas'],['PEND','Por cobrar']].map(x=>'<button class="btn '+(ui.filter===x[0]?'':'o')+'" data-act="filter" data-v="'+x[0]+'">'+x[1]+'</button>').join('')+'</div>'
   +(l.length?'<div class="list">'+l.map(docMini).join('')+'</div>':'<div class="empty">'+(DB.docs.length?'No hay resultados con ese filtro.':'Aquí aparecerán tus remisiones y cotizaciones.')+'</div>');
 }
 function clientsHTML(){
@@ -494,7 +512,7 @@ function clientFormHTML(c){
 function settingsHTML(){
   const s=DB.settings,cn=DB.counters;
   const f=(k,l,ex)=>'<label class="f"><span>'+l+'</span><input data-bind="cfg.'+k+'" value="'+esc(s[k]||'')+'" '+(ex||'')+'></label>';
-  const nr=nextNum('REM'),nc=nextNum('COT');
+  const nr=nextNum('REM'),nc=nextNum('COT'),nf=nextNum('FAC');
   return '<div class="top"><h1>Ajustes</h1></div>'
   +(s.configurado?'':'<div class="card"><h2>Bienvenido</h2><p class="hint">Completa los datos de tu empresa. Aparecen en cada remisión y cotización, y se guardan solo en este dispositivo. Puedes cambiarlos cuando quieras.</p></div>')
   +'<div class="card"><h2>Datos de la empresa</h2><p class="hint">Aparecen en el encabezado y la firma. Los documentos ya emitidos conservan los datos con los que se crearon; al editar uno, se actualiza con los datos actuales.</p>'
@@ -507,12 +525,13 @@ function settingsHTML(){
   +f('bTitular','Titular de la cuenta')+f('bDoc','Documento del titular','inputmode="numeric"')+f('banco','Banco')+'<div class="g2"><label class="f"><span>Tipo de cuenta</span><select data-bind="cfg.bTipo"><option value="" '+(!s.bTipo?'selected':'')+'>Sin especificar</option><option value="ahorros" '+(s.bTipo==='ahorros'?'selected':'')+'>Ahorros</option><option value="corriente" '+(s.bTipo==='corriente'?'selected':'')+'>Corriente</option></select></label>'+f('bCuenta','Número de cuenta','inputmode="numeric"')+'</div>'
   +f('bLlave','Llave Bre-B','inputmode="numeric"')+'</div>'
   +'<div class="card"><h2>Numeración</h2><p class="hint">Formato: prefijo-tipo-año-consecutivo. Próximos números: <b>'+esc(nr.num)+'</b> y <b>'+esc(nc.num)+'</b>.</p>'
-  +f('prefijo','Prefijo')+'<div class="g2"><label class="f"><span>Próxima remisión (N°)</span><input type="number" inputmode="numeric" min="1" data-bind="cnt.REM" value="'+nr.n+'"></label><label class="f"><span>Próxima cotización (N°)</span><input type="number" inputmode="numeric" min="1" data-bind="cnt.COT" value="'+nc.n+'"></label></div>'
+  +f('prefijo','Prefijo')+'<div class="g2"><label class="f"><span>Próxima remisión (N°)</span><input type="number" inputmode="numeric" min="1" data-bind="cnt.REM" value="'+nr.n+'"></label><label class="f"><span>Próxima cotización (N°)</span><input type="number" inputmode="numeric" min="1" data-bind="cnt.COT" value="'+nc.n+'"></label></div><label class="f"><span>Próxima factura de venta (N°) · ejemplo '+esc(nf.num)+'</span><input type="number" inputmode="numeric" min="1" data-bind="cnt.FAC" value="'+nf.n+'"></label>'
   +'<label class="sw"><div>Reiniciar el consecutivo cada año<small>El 1 de enero vuelve a 0001.</small></div><input type="checkbox" data-bind="cfg.resetAnual" '+(s.resetAnual?'checked':'')+'></label></div>'
   +'<div class="card"><h2>Textos</h2>'
   +'<label class="f"><span>Unidades de medida (separadas por coma)</span><input data-bind="cfg.unidades" data-kind="list" value="'+esc(s.unidades.join(', '))+'"></label>'
   +'<label class="f"><span>Pie de página de remisiones</span><input data-bind="cfg.pieREM" value="'+esc(s.pieREM)+'"></label>'
   +'<label class="f"><span>Pie de página de cotizaciones</span><input data-bind="cfg.pieCOT" value="'+esc(s.pieCOT)+'"></label>'
+  +'<label class="f"><span>Pie de página de facturas de venta (opcional)</span><input data-bind="cfg.pieFAC" value="'+esc(s.pieFAC||'')+'"></label>'
   +'<label class="f"><span>Validez de cotizaciones (días)</span><input type="number" inputmode="numeric" data-bind="cfg.validezDias" data-kind="num" value="'+esc(s.validezDias)+'"></label>'
   +'<label class="f"><span>Condiciones por defecto de cotizaciones</span><textarea data-bind="cfg.condCOT">'+esc(s.condCOT)+'</textarea></label></div>'
   +'<div class="card"><h2>Respaldo</h2><p class="hint">Los datos viven en este dispositivo. Descarga un respaldo de vez en cuando, y úsalo para pasar la información a otro celular.</p>'
@@ -520,10 +539,10 @@ function settingsHTML(){
   +(s.configurado?'':'<button class="btn w" data-act="finishSetup" style="margin-bottom:8px">Guardar y empezar</button>');
 }
 function editorHTML(d){
-  const isC=d.tipo==='COT',pr=usesPrices(d),s=DB.settings,t=totals(d);
+  const isC=d.tipo==='COT',isF=d.tipo==='FAC',pr=usesPrices(d),s=DB.settings,t=totals(d);
   const sel=(v,list)=>{const l=list.includes(v)?list:list.concat([v]);return l.map(u=>'<option '+(u===v?'selected':'')+'>'+esc(u)+'</option>').join('')};
   const cf=(k,l,ex)=>'<label class="f"><span>'+l+'</span><input data-bind="cliente.'+k+'" value="'+esc(d.cliente[k])+'" '+(ex||'')+'></label>';
-  return '<div class="top"><button class="ib" data-act="cancel" aria-label="Volver">'+ic('back')+'</button><h1>'+(d.id?'Editar ':'Nueva ')+(isC?'cotización':'remisión')+'</h1></div>'
+  return '<div class="top"><button class="ib" data-act="cancel" aria-label="Volver">'+ic('back')+'</button><h1>'+(d.id?'Editar ':'Nueva ')+({REM:'remisión',COT:'cotización',FAC:'factura de venta'}[d.tipo])+'</h1></div>'
   +'<div class="card"><h2>Datos del documento</h2><div class="g2"><label class="f"><span>Número</span><input value="'+esc(d.num||nextNum(d.tipo).num)+'" readonly></label><label class="f"><span>Fecha</span><input type="date" data-bind="fecha" value="'+esc(d.fecha)+'"></label></div><label class="f"><span>Ciudad</span><input data-bind="ciudad" value="'+esc(d.ciudad)+'"></label></div>'
   +'<div class="card"><h2>Destinatario</h2>'+(DB.clients.length?'<label class="f"><span>Elegir cliente guardado</span><select data-pick="1"><option value="">Seleccionar…</option>'+DB.clients.slice().sort((a,b)=>a.nombre.localeCompare(b.nombre)).map(c=>'<option value="'+c.id+'">'+esc(c.nombre)+'</option>').join('')+'</select></label>':'')
   +cf('nombre','Nombre o razón social')+cf('doc','NIT o C.C.')+cf('dir','Dirección')+'<div class="g2">'+cf('ciudad','Ciudad')+cf('tel','Teléfono','inputmode="tel"')+'</div>'+cf('contacto','Persona de contacto')
@@ -535,7 +554,8 @@ function editorHTML(d){
     +(pr?'<label class="f"><span>V. unitario</span><input inputmode="numeric" data-kind="money" data-bind="items.'+k+'.precio" value="'+(i.precio?thou(i.precio):'')+'" placeholder="0"></label>':'<label class="f"><span>Código</span><input data-bind="items.'+k+'.cod" value="'+esc(i.cod)+'" placeholder="opcional"></label>')+'</div></div>').join('')
   +'<div class="bar"><button class="btn g" data-act="addItem">'+ic('plus')+'Agregar artículo</button><button class="btn o" data-act="pasteOpen">'+ic('list')+'Pegar lista</button></div>'
   +(pr?'<div class="live"><span>Total</span><span id="live">'+cop(t.total)+'</span></div>':'<div class="live"><span>Unidades</span><span id="live">'+fq(t.units)+'</span></div>')+'</div>'
-  +(isC?'<div class="card"><h2>Condiciones</h2><div class="g2"><label class="f"><span>Validez (días)</span><input type="number" inputmode="numeric" data-kind="num" data-bind="validez" value="'+esc(d.validez)+'"></label><label class="f"><span>Descuento (%)</span><input type="number" inputmode="decimal" step="any" data-kind="num" data-bind="descPct" value="'+esc(d.descPct||'')+'" placeholder="0"></label></div>'
+  +(isF?'<div class="card"><h2>Pago y control</h2><label class="f"><span>Forma de pago</span><select data-bind="formaPago" data-rerender="1">'+['Contado','Crédito'].map(o=>'<option '+(d.formaPago===o?'selected':'')+'>'+o+'</option>').join('')+'</select></label>'+(d.formaPago==='Crédito'?'<label class="f"><span>Plazo (días)</span><input type="number" inputmode="numeric" data-kind="num" data-bind="plazo" value="'+esc(d.plazo)+'"></label>':'')+'<label class="f"><span>Cotización u orden de referencia</span><input data-bind="ref" value="'+esc(d.ref)+'"></label>'+'<label class="f"><span>Descuento (%)</span><input type="number" inputmode="decimal" step="any" data-kind="num" data-bind="descPct" value="'+esc(d.descPct||'')+'" placeholder="0"></label>'+'<label class="sw"><div>Incluir IVA<small>Si eres no responsable de IVA, déjalo apagado.</small></div><input type="checkbox" data-bind="aplicaIva" data-rerender="1" '+(d.aplicaIva?'checked':'')+'></label>'+(d.aplicaIva?'<label class="f"><span>IVA (%)</span><input type="number" inputmode="decimal" step="any" data-kind="num" data-bind="ivaPct" value="'+esc(d.ivaPct)+'"></label>':'')+'<label class="f"><span>N° de la factura electrónica en la DIAN (si ya la emitiste)</span><input data-bind="nFE" value="'+esc(d.nFE||'')+'"></label>'+'<label class="f"><span>Estado de cobro</span><select data-bind="estado"><option value="pendiente" '+(d.estado!=='cobrada'?'selected':'')+'>Pendiente de pago</option><option value="cobrada" '+(d.estado==='cobrada'?'selected':'')+'>Cobrada</option></select></label>'+'<label class="sw"><div>Mostrar datos de pago<small>Cuenta bancaria y llave Bre-B, configurables en Ajustes.</small></div><input type="checkbox" data-bind="mostrarPago" '+(d.mostrarPago!==false?'checked':'')+'></label></div>'
+  :isC?'<div class="card"><h2>Condiciones</h2><div class="g2"><label class="f"><span>Validez (días)</span><input type="number" inputmode="numeric" data-kind="num" data-bind="validez" value="'+esc(d.validez)+'"></label><label class="f"><span>Descuento (%)</span><input type="number" inputmode="decimal" step="any" data-kind="num" data-bind="descPct" value="'+esc(d.descPct||'')+'" placeholder="0"></label></div>'
     +'<label class="sw"><div>Incluir IVA<small>Si eres no responsable de IVA, déjalo apagado.</small></div><input type="checkbox" data-bind="aplicaIva" data-rerender="1" '+(d.aplicaIva?'checked':'')+'></label>'
     +(d.aplicaIva?'<label class="f"><span>IVA (%)</span><input type="number" inputmode="decimal" step="any" data-kind="num" data-bind="ivaPct" value="'+esc(d.ivaPct)+'"></label>':'')
     +'<label class="f"><span>Condiciones comerciales</span><textarea data-bind="cond">'+esc(d.cond)+'</textarea></label>'
@@ -546,12 +566,18 @@ function editorHTML(d){
   +'<div class="card"><h2>Observaciones</h2><label class="f"><span>Opcional</span><textarea data-bind="obs">'+esc(d.obs)+'</textarea></label></div>'
   +'<div class="actbar"><div><button class="btn w" data-act="preview">Ver vista previa</button></div></div>';
 }
+function actionsHTML(d){
+  const L={REM:'remisión',COT:'cotización',FAC:'factura de venta'};
+  const T={REM:['REM','COT','FAC'],COT:['COT','REM','FAC'],FAC:['FAC','REM']}[d.tipo]||[d.tipo];
+  return '<div class="card" style="margin-top:12px">'+(d.tipo==='FAC'?'<button class="btn '+(d.estado==='cobrada'?'o':'')+' w" data-act="toggleCobro" style="margin-bottom:10px">'+(d.estado==='cobrada'?'Marcar como pendiente de pago':'Marcar como cobrada')+'</button>':'')
+   +'<div class="bar"><button class="btn o" data-act="edit">Editar</button>'+T.map(x=>'<button class="btn o" data-act="dup" data-t="'+x+'">'+(x===d.tipo?'Duplicar':'Crear '+L[x])+'</button>').join('')+'<button class="btn d" data-act="delDoc">Eliminar</button></div></div>';
+}
 function previewHTML(d){
   const saved=ui.saved&&d.id;
   return '<div class="top"><button class="ib" data-act="'+(saved&&ui.from!=='editor'?'closePrev':'backEdit')+'" aria-label="Volver">'+ic('back')+'</button><h1>'+tipoName(d.tipo)+(d.num?' '+esc(d.num):'')+'</h1></div>'
   +'<div class="sheetwrap" id="sw"><div class="sheet" id="sheet">'+docHTML(d)+'</div></div>'
   +'<p class="hint" style="margin-top:10px">'+(saved?'Guardado en el historial.':'El número se asigna al guardar.')+' El PDF final se divide en páginas si hay muchos artículos.</p>'
-  +(saved?'<div class="card" style="margin-top:12px"><div class="bar"><button class="btn o" data-act="edit">Editar</button><button class="btn o" data-act="dup" data-t="'+d.tipo+'">Duplicar</button><button class="btn o" data-act="dup" data-t="'+(d.tipo==='REM'?'COT':'REM')+'">Usar para '+(d.tipo==='REM'?'cotización':'remisión')+'</button><button class="btn d" data-act="delDoc">Eliminar</button></div></div>':'')
+  +(saved?actionsHTML(d):'')
   +'<div class="actbar"><div class="bar"><button class="btn o" data-act="download">'+ic('dl')+'Guardar PDF</button><button class="btn" data-act="share">'+ic('share')+'Compartir PDF</button></div></div>';
 }
 function navHTML(){
@@ -623,6 +649,7 @@ document.addEventListener('click',async e=>{
   const a=b.dataset.act,d=ui.draft;
   switch(a){
     case 'tab':go(b.dataset.s,{draft:null,saved:false});break;
+    case 'pend':ui.filter='PEND';go('history',{draft:null,saved:false});break;
     case 'new':if(!DB.settings.configurado){toast('Primero completa los datos de tu empresa');go('settings',{draft:null});break}ui.draft=newDraft(b.dataset.t);ui.saved=false;go('editor');break;
     case 'finishSetup':{const s=DB.settings;if(!s.empresa.trim()||!s.titular.trim()||!s.tel.trim()){toast('Completa al menos empresa, titular y celular');return}s.configurado=true;persist();go('home');toast('Datos guardados. Ya puedes crear documentos');break}
     case 'filter':ui.filter=b.dataset.v;render();break;
@@ -635,7 +662,12 @@ document.addEventListener('click',async e=>{
     case 'closePrev':go('history',{draft:null,saved:false});break;
     case 'open':{const x=DB.docs.find(z=>z.id===b.dataset.id);if(x){ui.draft=JSON.parse(JSON.stringify(x));ui.saved=true;go('preview',{from:'list'})}break}
     case 'edit':ui.from='editor';go('editor');break;
-    case 'dup':{const nd=JSON.parse(JSON.stringify(d));nd.id=null;nd.num=null;nd.tipo=b.dataset.t;nd.fecha=today();delete nd.emisor;delete nd.creado;if(nd.tipo==='COT'){nd.validez=DB.settings.validezDias;nd.cond=DB.settings.condCOT}ui.draft=nd;ui.saved=false;go('editor');break}
+    case 'dup':{const nd=JSON.parse(JSON.stringify(d));const from=d.tipo;nd.id=null;nd.num=null;nd.tipo=b.dataset.t;nd.fecha=today();delete nd.emisor;delete nd.creado;
+      const base=newDraft(nd.tipo);Object.keys(base).forEach(k=>{if(nd[k]===undefined)nd[k]=base[k]});
+      if(nd.tipo==='COT'){nd.validez=DB.settings.validezDias;nd.cond=DB.settings.condCOT}
+      if(nd.tipo==='FAC'){nd.estado='pendiente';nd.nFE='';if(from!=='FAC')nd.ref=d.num}
+      ui.draft=nd;ui.saved=false;go('editor');break}
+    case 'toggleCobro':{d.estado=d.estado==='cobrada'?'pendiente':'cobrada';const k=DB.docs.findIndex(z=>z.id===d.id);if(k>=0){DB.docs[k]=d;persist()}render();toast(d.estado==='cobrada'?'Marcada como cobrada':'Marcada como pendiente de pago');break}
     case 'delDoc':modal({title:'Eliminar documento',text:'Se borrará '+d.num+' del historial. El consecutivo no se reutiliza.',ok:'Eliminar',danger:true,cb:()=>{DB.docs=DB.docs.filter(z=>z.id!==d.id);persist();go('history',{draft:null,saved:false});toast('Documento eliminado')}});break;
     case 'share':case 'download':
       if(!validate(d))return;

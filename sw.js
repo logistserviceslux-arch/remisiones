@@ -1,6 +1,6 @@
 /* Logist · funcionamiento sin internet.
    Al publicar cambios, sube el número de VERSION para que los celulares se actualicen. */
-const VERSION = 'logist-v1';
+const VERSION = 'logist-v2';
 const FILES = [
   './', './index.html', './manifest.webmanifest',
   './vendor/jspdf.umd.min.js', './vendor/jspdf.plugin.autotable.min.js',
