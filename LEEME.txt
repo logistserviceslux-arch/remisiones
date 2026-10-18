@@ -1,0 +1,20 @@
+LOGIST - Remisiones y cotizaciones (app instalable)
+
+CONTENIDO (se sube todo tal cual, con las carpetas):
+  index.html, manifest.webmanifest, sw.js, .nojekyll
+  carpetas: icons/  fonts/  vendor/
+
+PUBLICAR EN GITHUB PAGES
+  1. En GitHub: botón "New repository". Nombre sugerido: remisiones. Público. Crear.
+  2. "uploading an existing file": arrastra TODO el contenido de esta carpeta
+     (incluidas las carpetas y el archivo .nojekyll). Commit changes.
+  3. Settings > Pages > Source: "Deploy from a branch" > rama main, carpeta / (root) > Save.
+  4. En 1 o 2 minutos la app queda en: https://USUARIO.github.io/remisiones/
+
+ACTUALIZAR EN EL FUTURO
+  Sube los archivos nuevos al mismo repositorio y, en sw.js, cambia VERSION
+  (logist-v1 -> logist-v2) para que los celulares se actualicen.
+
+PRIVACIDAD
+  El repositorio es público: aquí NO hay datos personales ni bancarios.
+  Cada usuario los escribe en Ajustes y quedan solo en su dispositivo.
